@@ -1,0 +1,10 @@
+[package]
+name = "cmake-tui"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+regex = "1.12.2"
+color-eyre = "0.6.3"
+crossterm = "0.28.1"
+ratatui = "0.29.0"
