@@ -39,7 +39,7 @@ impl fmt::Display for EntryType {
 pub struct CacheEntry {
     name: String,
     entry_type: EntryType,
-    desc: String,
+    pub desc: String,
     value: String,
     values: Vec<String>,
     // advanced: bool
@@ -159,7 +159,7 @@ pub fn parse_cmake_cache(build_dir: &str) -> io::Result<HashMap<String, CacheEnt
     let mut cmake_cache_path = PathBuf::from(build_dir);
     cmake_cache_path.push("CMakeCache.txt");
 
-    println!("Reading CMake cache from: {:?}", cmake_cache_path);
+    // println!("Reading CMake cache from: {:?}", cmake_cache_path);
 
     let cache_content = std::fs::read_to_string(&cmake_cache_path)?;
 
