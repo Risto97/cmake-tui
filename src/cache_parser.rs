@@ -37,11 +37,11 @@ impl fmt::Display for EntryType {
 }
 
 pub struct CacheEntry {
-    name: String,
-    entry_type: EntryType,
+    pub name: String,
+    pub entry_type: EntryType,
     pub desc: String,
-    value: String,
-    values: Vec<String>,
+    pub value: String,
+    pub values: Vec<String>,
     // advanced: bool
 }
 
@@ -155,7 +155,7 @@ impl CacheParser{
     }
 }
 
-pub fn parse_cmake_cache(build_dir: &str) -> io::Result<HashMap<String, CacheEntry>> {
+pub fn parse_cmake_cache(build_dir: &str) -> io::Result<Vec<CacheEntry>> {
     let mut cmake_cache_path = PathBuf::from(build_dir);
     cmake_cache_path.push("CMakeCache.txt");
 
@@ -166,6 +166,18 @@ pub fn parse_cmake_cache(build_dir: &str) -> io::Result<HashMap<String, CacheEnt
     let parser = CacheParser::new()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
-    Ok(parser.parse_cache(&cache_content))
+    // Parse into HashMap<String, CacheEntry>
+    let mut entries: Vec<CacheEntry> = parser.parse_cache(&cache_content)
+        .into_iter()
+        .map(|(name, mut entry)| {
+            entry.name = name; // ensure the struct contains the key
+            entry
+        })
+        .collect();
+
+    // Sort by key (name)
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(entries)
 }
 

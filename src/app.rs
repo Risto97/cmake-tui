@@ -2,12 +2,13 @@ use std::collections::HashMap;
 
 use color_eyre::Result;
 use ratatui::{
+    DefaultTerminal,
     buffer::Buffer,
     crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
     layout::{Constraint, Layout, Rect},
     style::{
-        palette::tailwind::{BLUE, GREEN, SLATE},
         Color, Modifier, Style, Stylize,
+        palette::tailwind::{BLUE, GREEN, SLATE},
     },
     symbols,
     text::Line,
@@ -15,7 +16,6 @@ use ratatui::{
         Block, Borders, HighlightSpacing, List, ListItem, ListState, Padding, Paragraph,
         StatefulWidget, Widget, Wrap,
     },
-    DefaultTerminal,
 };
 
 use crate::cache_parser::{CacheEntry, parse_cmake_cache};
@@ -27,8 +27,7 @@ const SELECTED_STYLE: Style = Style::new().bg(SLATE.c800).add_modifier(Modifier:
 const TEXT_FG_COLOR: Color = SLATE.c200;
 const COMPLETED_TEXT_FG_COLOR: Color = GREEN.c500;
 
-
-/// This struct holds the current state of the app. In particular, it has the `todo_list` field
+/// This struct holds the current state of the app. In particular, it has the `cache_list` field
 /// which is a wrapper around `ListState`. Keeping track of the state lets us render the
 /// associated widget with its state and have access to features such as natural scrolling.
 ///
@@ -36,19 +35,13 @@ const COMPLETED_TEXT_FG_COLOR: Color = GREEN.c500;
 /// the drawing logic for items on how to specify the highlighting style for selected items.
 pub struct App {
     should_exit: bool,
-    todo_list: TodoList,
+    cache_list: CacheEntryList,
 }
 
-struct TodoList {
-    items: Vec<TodoItem>,
+struct CacheEntryList {
+    items: Vec<CacheEntry>,
+    longest_name: usize,
     state: ListState,
-}
-
-#[derive(Debug)]
-struct TodoItem {
-    todo: String,
-    info: String,
-    status: Status,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -59,50 +52,48 @@ enum Status {
 
 impl Default for App {
     fn default() -> Self {
-        let entry_dict: HashMap<String, CacheEntry> = parse_cmake_cache("/tools/work/x-heep/build/").unwrap_or_default();
+        let vec: Vec<CacheEntry> =
+            parse_cmake_cache("/tools/work/x-heep/build/").unwrap_or_default();
 
-        let todo_items: Vec<TodoItem> = entry_dict
-            .into_iter()
-            .map(|(key, entry)| TodoItem {
-                todo: key,           // String (title)
-                info: entry.desc,    // String (description)
-                status: Status::Todo,
-            })
-            .collect();
+        let max_len = vec
+            .iter()
+            .map(|i| i.name.chars().count())
+            .max()
+            .unwrap_or(100);
 
-        let todo_list = TodoList {
-            items: todo_items,
+        let cache_list = CacheEntryList {
+            items: vec,
+            longest_name: max_len,
             state: ListState::default(),
         };
 
-
         Self {
             should_exit: false,
-            todo_list,
+            cache_list: cache_list,
         }
     }
 }
 
-impl FromIterator<(Status, &'static str, &'static str)> for TodoList {
-    fn from_iter<I: IntoIterator<Item = (Status, &'static str, &'static str)>>(iter: I) -> Self {
-        let items = iter
-            .into_iter()
-            .map(|(status, todo, info)| TodoItem::new(status, todo, info))
-            .collect();
-        let state = ListState::default();
-        Self { items, state }
-    }
-}
+// impl FromIterator<(Status, &'static str, &'static str)> for CacheEntryList {
+//     fn from_iter<I: IntoIterator<Item = (Status, &'static str, &'static str)>>(iter: I) -> Self {
+//         let items = iter
+//             .into_iter()
+//             .map(|(status, todo, info)| CacheEntry::new(status, todo, info))
+//             .collect();
+//         let state = ListState::default();
+//         Self { items, state }
+//     }
+// }
 
-impl TodoItem {
-    fn new(status: Status, todo: &str, info: &str) -> Self {
-        Self {
-            status,
-            todo: todo.to_string(),
-            info: info.to_string(),
-        }
-    }
-}
+// impl CacheEntry {
+//     fn new(status: Status, todo: &str, info: &str) -> Self {
+//         Self {
+//             status,
+//             todo: todo.to_string(),
+//             info: info.to_string(),
+//         }
+//     }
+// }
 
 impl App {
     pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
@@ -134,31 +125,31 @@ impl App {
     }
 
     fn select_none(&mut self) {
-        self.todo_list.state.select(None);
+        self.cache_list.state.select(None);
     }
 
     fn select_next(&mut self) {
-        self.todo_list.state.select_next();
+        self.cache_list.state.select_next();
     }
     fn select_previous(&mut self) {
-        self.todo_list.state.select_previous();
+        self.cache_list.state.select_previous();
     }
 
     fn select_first(&mut self) {
-        self.todo_list.state.select_first();
+        self.cache_list.state.select_first();
     }
 
     fn select_last(&mut self) {
-        self.todo_list.state.select_last();
+        self.cache_list.state.select_last();
     }
 
     /// Changes the status of the selected list item
     fn toggle_status(&mut self) {
-        if let Some(i) = self.todo_list.state.selected() {
-            self.todo_list.items[i].status = match self.todo_list.items[i].status {
-                Status::Completed => Status::Todo,
-                Status::Todo => Status::Completed,
-            }
+        if let Some(i) = self.cache_list.state.selected() {
+            // self.cache_list.items[i].status = match self.cache_list.items[i].status {
+            //     Status::Completed => Status::Todo,
+            //     Status::Todo => Status::Completed,
+            // }
         }
     }
 }
@@ -198,8 +189,17 @@ impl App {
     }
 
     fn render_list(&mut self, area: Rect, buf: &mut Buffer) {
+
+        let title = format!(
+            " {:<name_width$}{:<type_width$}{}",
+            "Name",
+            "Type",
+            "Value",
+            name_width = self.cache_list.longest_name + 10,
+            type_width = 20,
+        );
         let block = Block::new()
-            .title(Line::raw("TODO List").centered())
+            .title(Line::raw(title).left_aligned())
             .borders(Borders::TOP)
             .border_set(symbols::border::EMPTY)
             .border_style(TODO_HEADER_STYLE)
@@ -207,13 +207,15 @@ impl App {
 
         // Iterate through all elements in the `items` and stylize them.
         let items: Vec<ListItem> = self
-            .todo_list
+            .cache_list
             .items
             .iter()
             .enumerate()
             .map(|(i, todo_item)| {
                 let color = alternate_colors(i);
-                ListItem::from(todo_item).bg(color)
+                todo_item
+                    .to_list_item(self.cache_list.longest_name)
+                    .bg(color)
             })
             .collect();
 
@@ -226,15 +228,16 @@ impl App {
 
         // We need to disambiguate this trait method as both `Widget` and `StatefulWidget` share the
         // same method name `render`.
-        StatefulWidget::render(list, area, buf, &mut self.todo_list.state);
+        StatefulWidget::render(list, area, buf, &mut self.cache_list.state);
     }
 
     fn render_selected_item(&self, area: Rect, buf: &mut Buffer) {
         // We get the info depending on the item's state.
-        let info = if let Some(i) = self.todo_list.state.selected() {
-            match self.todo_list.items[i].status {
-                Status::Completed => format!("✓ DONE: {}", self.todo_list.items[i].info),
-                Status::Todo => format!("☐ TODO: {}", self.todo_list.items[i].info),
+        let info = if let Some(i) = self.cache_list.state.selected() {
+            match self.cache_list.items[i].value {
+                //     Status::Completed => format!("✓ DONE: {}", self.cache_list.items[i].info),
+                //     Status::Todo => format!("☐ TODO: {}", self.cache_list.items[i].info),
+                _ => format!("☐ TODO: {}", self.cache_list.items[i].desc),
             }
         } else {
             "Nothing selected...".to_string()
@@ -266,14 +269,38 @@ const fn alternate_colors(i: usize) -> Color {
     }
 }
 
-impl From<&TodoItem> for ListItem<'_> {
-    fn from(value: &TodoItem) -> Self {
-        let line = match value.status {
-            Status::Todo => Line::styled(format!(" ☐ {}", value.todo), TEXT_FG_COLOR),
-            Status::Completed => {
-                Line::styled(format!(" ✓ {}", value.todo), COMPLETED_TEXT_FG_COLOR)
-            }
-        };
-        ListItem::new(line)
+trait ToListItem {
+    fn to_list_item(&self, max_name_len: usize) -> ListItem<'_>;
+}
+
+impl ToListItem for CacheEntry {
+    fn to_list_item(&self, max_name_len: usize) -> ListItem<'_> {
+        // Truncate name
+        // let mut name: String = self.name.chars().take(max_name_space).collect();
+        // let current_len = name.chars().count();
+        // if current_len < max_name_space {
+        //     name.push_str(&" ".repeat(max_name_space - current_len));
+        // }
+        //
+        // // Truncate + pad entry type
+        // let mut entry_type: String =
+        //     self.entry_type.to_string().chars().take(20).collect();
+        // let cur = entry_type.chars().count();
+        // if cur < 20 {
+        //     entry_type.push_str(&" ".repeat(20 - cur));
+        // }
+
+        let line = format!(
+            "{:<name_width$}{:<type_width$}{}",
+            self.name,
+            self.entry_type,
+            self.value,
+            name_width = max_name_len+10,
+            type_width = 50,
+        );
+
+        // let line = format!("{}{}{}", name, entry_type, self.value);
+
+        ListItem::new(Line::styled(line, TEXT_FG_COLOR))
     }
 }
