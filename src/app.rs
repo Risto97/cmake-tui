@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::format, isize};
+use std::{collections::HashMap, path::PathBuf};
 
 use color_eyre::Result;
 use ratatui::{
@@ -8,24 +8,24 @@ use ratatui::{
     layout::{Constraint, Layout, Rect, Flex},
     style::{
         Color, Modifier, Style, Stylize,
-        palette::tailwind::{BLUE, GREEN, SLATE},
+        palette::tailwind::{BLUE, SLATE},
     },
     symbols,
     text::Line,
     widgets::{
         Block, Borders, HighlightSpacing, Padding, Paragraph, StatefulWidget, 
-        Widget, Wrap, Table, Row, Cell, TableState, Clear // <--- Updated imports
+        Widget, Wrap, Table, Row, Cell, TableState, Clear
     },
 };
 
-use crate::cache_parser::{CacheEntry, EntryType, parse_cmake_cache};
+use crate::cache_parser::{CacheVar, VarType, parse_cmake_cache};
 
 const TODO_HEADER_STYLE: Style = Style::new().fg(SLATE.c100).bg(BLUE.c800);
 const NORMAL_ROW_BG: Color = SLATE.c950;
 const ALT_ROW_BG_COLOR: Color = SLATE.c900;
 const SELECTED_STYLE: Style = Style::new().bg(SLATE.c800).add_modifier(Modifier::BOLD);
 const TEXT_FG_COLOR: Color = SLATE.c200;
-const COMPLETED_TEXT_FG_COLOR: Color = GREEN.c500;
+// const COMPLETED_TEXT_FG_COLOR: Color = GREEN.c500;
 
 #[derive(PartialEq)]
 enum AppMode {
@@ -36,7 +36,7 @@ enum AppMode {
 
 pub struct App {
     should_exit: bool,
-    cache_list: CacheEntryList,
+    var_list: CacheVarList,
     mode: AppMode,
     show_advanced: bool,
 
@@ -44,40 +44,53 @@ pub struct App {
     cursor_pos: usize,
 }
 
-struct CacheEntryList {
-    all_items: Vec<CacheEntry>,
-    items: Vec<CacheEntry>,
+struct CacheVarTui {
+    var: CacheVar,
+    new_val: String,
+}
+
+impl From<CacheVar> for CacheVarTui {
+    fn from(var: CacheVar) -> Self {
+        CacheVarTui {
+            new_val: var.value.clone(),
+            var: var,
+        }
+    }
+}
+
+struct CacheVarList {
+    vars: Vec<CacheVarTui>,
+    row_idx_var_idx_map: HashMap<usize, usize>,
     longest_name: usize,
     state: TableState,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum Status {
-    Todo,
-    Completed,
-}
+impl App {
+    pub fn new(build_dir: PathBuf) -> Self {
+        let vec: Vec<CacheVar> =
+            parse_cmake_cache(build_dir).unwrap_or_default();
 
-impl Default for App {
-    fn default() -> Self {
-        let vec: Vec<CacheEntry> =
-            parse_cmake_cache("/tools/work/x-heep/build/").unwrap_or_default();
+        let tui_vec: Vec<CacheVarTui> = vec
+                    .into_iter()
+                    .map(CacheVarTui::from) // Uses the impl From we just wrote
+                    .collect();
 
-        let max_len = vec
+        let max_len = tui_vec
             .iter()
-            .map(|i| i.name.chars().count())
+            .map(|i| i.var.name.chars().count())
             .max()
             .unwrap_or(100); // Default fallback width
         
-        let cache_list = CacheEntryList {
-            all_items: vec,
-            items: Vec::new(),
+        let var_list = CacheVarList {
+            vars: tui_vec,
+            row_idx_var_idx_map: HashMap::new(),
             longest_name: max_len,
             state: TableState::default(),
         };
 
         Self {
             should_exit: false,
-            cache_list: cache_list,
+            var_list: var_list,
             mode: AppMode::Scroll,
             show_advanced: false,
 
@@ -85,11 +98,9 @@ impl Default for App {
             cursor_pos: 0,
         }
     }
-}
 
-impl App {
     pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
-        self.rebuild_visible();
+        self.rebuild_idx_map();
         while !self.should_exit {
             terminal.draw(|frame| frame.render_widget(&mut self, frame.area()))?;
             if let Event::Key(key) = event::read()? {
@@ -110,18 +121,30 @@ impl App {
             KeyCode::Char('t')  => self.toggle_show_advanced(),
             KeyCode::Enter => self.edit_value(),
             KeyCode::Char(' ') => self.cycle_value(),
-            KeyCode::Char('/') => self.search_entry(),
+            KeyCode::Char('/') => self.search_var(),
             KeyCode::Char('n') => self.select_next_search_result(),
             _ => {}
         }
     }
 
-    fn rebuild_visible(&mut self) {
-        self.cache_list.items = self.cache_list.all_items
-            .iter()
-            .filter(|x| self.show_advanced || !x.advanced)
-            .cloned()
-            .collect();
+    fn rebuild_idx_map(&mut self){
+        self.var_list.row_idx_var_idx_map.clear();
+        for (original_idx, var) in self.var_list.vars.iter().enumerate(){
+            if self.show_advanced || !var.var.advanced {
+                let row_idx = self.var_list.row_idx_var_idx_map.len();
+                self.var_list.row_idx_var_idx_map.insert(row_idx, original_idx);
+            }
+        }
+    }
+
+    // fn get_selected_var_idx(&self) -> Option<usize> {
+    //     self.var_list.state.selected()
+    //         .and_then(|row_idx| self.var_list.row_idx_var_idx_map.get(&row_idx))
+    //         .copied()
+    // }
+
+    fn check_if_var_is_modified(&self, var: &CacheVarTui) -> bool {
+        var.new_val != var.var.value
     }
 
 
@@ -149,7 +172,7 @@ impl App {
                 }
             }
             KeyCode::Right => {
-                if self.cursor_pos > 0{
+                if self.cursor_pos < self.search_input.len() {
                     self.cursor_pos += 1;
                 }
             }
@@ -174,63 +197,57 @@ impl App {
         }
     }
 
-    // fn select_none(&mut self) {
-    //     self.cache_list.state.select(None);
-    // }
-
-    fn select_next_search_result(&mut self) {
+    fn select_next_search_result(&mut self){
         if self.mode != AppMode::Scroll { return; }
         if self.search_input.is_empty() { return; }
 
         let query = self.search_input.to_lowercase();
 
-        // Where do we start searching?
-        let start = self.cache_list.state.selected().unwrap_or(0);
+        let start_row = self.var_list.state.selected().unwrap_or(0);
+        let last_row = self
+            .var_list
+            .row_idx_var_idx_map
+            .len()-1;
 
-        let items = &self.cache_list.items;
+        // Search the list starting from the current row until the end.
+        // Once it wraps to the end search again from the begining of the list to the start row
+        let search_order = (start_row + 1..last_row).chain(0..=start_row);
 
-        // 1) Search from current+1 → end
-        for i in start + 1 .. items.len() {
-            if items[i].name.to_lowercase().starts_with(&query) {
-                self.cache_list.state.select(Some(i));
-                return;
-            }
-        }
-
-        // 2) Wrap around: search from top → current
-        for i in 0 ..= start {
-            if items[i].name.to_lowercase().starts_with(&query) {
-                self.cache_list.state.select(Some(i));
-                return;
+        for row in search_order {
+            let var_idx = *self.var_list.row_idx_var_idx_map.get(&row).unwrap();
+            let var = &self.var_list.vars.get(var_idx).unwrap();
+            if var.var.name.to_lowercase().starts_with(&query){
+                self.var_list.state.select(Some(row));
+                return
             }
         }
     }
 
     fn toggle_show_advanced(&mut self) {
         self.show_advanced = !self.show_advanced;
-        self.rebuild_visible();
+        self.rebuild_idx_map();
     }
 
     fn select_next(&mut self) {
         if self.mode != AppMode::Scroll {return}
-        self.cache_list.state.select_next();
+        self.var_list.state.select_next();
     }
     fn select_previous(&mut self) {
         if self.mode != AppMode::Scroll {return}
-        self.cache_list.state.select_previous();
+        self.var_list.state.select_previous();
     }
 
     fn select_first(&mut self) {
         if self.mode != AppMode::Scroll {return}
-        self.cache_list.state.select_first();
+        self.var_list.state.select_first();
     }
 
     fn select_last(&mut self) {
         if self.mode != AppMode::Scroll {return}
-        self.cache_list.state.select_last();
+        self.var_list.state.select_last();
     }
 
-    fn search_entry(&mut self) {
+    fn search_var(&mut self) {
         if self.mode != AppMode::Scroll {return}
         self.search_input.clear();
         self.cursor_pos = 0;
@@ -240,12 +257,12 @@ impl App {
     fn cycle_value(&mut self) {
         if self.mode != AppMode::Scroll {return}
 
-        let item: &mut CacheEntry = self.get_selected_item_mut().unwrap(); 
+        let var: &mut CacheVarTui = self.get_selected_var_mut().unwrap(); 
 
-        if item.entry_type == EntryType::Bool {
-            item.toggle_bool();
-        } else if item.entry_type == EntryType::Enum {
-            item.cycle_enum();
+        if var.var.typ == VarType::Bool {
+            var.new_val = CacheVar::toggle_bool(&var.new_val);
+        } else if var.var.typ == VarType::Enum {
+            var.new_val = var.var.cycle_enum(&var.new_val);
         }
 
     }
@@ -255,7 +272,7 @@ impl App {
             self.mode = AppMode::Scroll;
 
         } else if self.mode == AppMode::Scroll {
-            if self.get_selected_item().unwrap().entry_type == EntryType::Bool {
+            if self.get_selected_var().unwrap().var.typ == VarType::Bool {
                 // self.mode = AppMode::ValueEdit
             }
         }
@@ -276,10 +293,10 @@ impl Widget for &mut App {
 
         App::render_title_header(title_area, buf);
         App::render_help_footer(help_area, buf);
-        self.render_entry_table(list_area, buf);
+        self.render_var_table(list_area, buf);
 
         if self.mode != AppMode::SearchInput{
-            self.render_selected_item(footer_area, buf);
+            self.render_selected_var(footer_area, buf);
         } else {
             self.render_search_footer(footer_area, buf);
 
@@ -303,32 +320,32 @@ impl App {
             .render(area, buf);
     }
 
-    fn get_selected_item_mut(&mut self) -> Option<&mut CacheEntry> {
-        self.cache_list.state.selected().map(|i| {
-            &mut self.cache_list.items[i]
-        })
+    fn get_selected_var_mut(&mut self) -> Option<&mut CacheVarTui> {
+        let row_idx = self.var_list.state.selected()?;
+        let var_idx = *self.var_list.row_idx_var_idx_map.get(&row_idx)?;
+        self.var_list.vars.get_mut(var_idx)
     }
 
-    fn get_selected_item(&self) -> Option<&CacheEntry>{
-        self.cache_list.state.selected().map(|i| {
-            &self.cache_list.items[i]
-        })
+    fn get_selected_var(&self) -> Option<&CacheVarTui> {
+        let row_idx = self.var_list.state.selected()?;
+        let var_idx = *self.var_list.row_idx_var_idx_map.get(&row_idx)?;
+        self.var_list.vars.get(var_idx)
     }
 
     fn render_popup(&self, area: Rect, buf: &mut Buffer) {
         if self.mode != AppMode::ValueEdit {return};
 
-        let item = self.get_selected_item().unwrap(); // TODO fix unwrap
+        let var = self.get_selected_var().unwrap(); // TODO fix unwrap
 
         // Format the detailed content. Use Line::from(Vec<Span>) for rich text.
         let content = vec![
-            Line::from(format!("Name: {}", item.name)).bold(),
-            Line::from(format!("Type: {}", item.entry_type)),
-            // Line::from(format!("Value: {}", item.value)),
+            Line::from(format!("Name: {}", var.var.name)).bold(),
+            Line::from(format!("Type: {}", var.var.typ)),
+            // Line::from(format!("Value: {}", var.value)),
             // Line::from(vec![
             //     "Description: ".bold(),
-            //     // Assuming 'desc' field exists on CacheEntry based on your prior commented code
-            //     item.desc.clone().into(), 
+            //     // Assuming 'desc' field exists on CacheVar based on your prior commented code
+            //     var.desc.clone().into(), 
             // ]),
         ];
         // let content = vec![Line::from(format!("Name")).bold()];
@@ -339,7 +356,7 @@ impl App {
 
         // // 3. Define the Block
         let block = Block::new()
-            .title(Line::raw("Full Cache Entry Details").centered().bold())
+            .title(Line::raw("Full Cache Variable Details").centered().bold())
             .borders(Borders::ALL)
             .border_style(Style::new().fg(BLUE.c500))
             .bg(NORMAL_ROW_BG); // Dark background
@@ -353,7 +370,7 @@ impl App {
     }
 
     // --- NEW TABLE RENDERING LOGIC ---
-    fn render_entry_table(&mut self, area: Rect, buf: &mut Buffer) {
+    fn render_var_table(&mut self, area: Rect, buf: &mut Buffer) {
         // 1. Define the Container Block
         let block = Block::new()
             .title(Line::raw(" Cache Entries ").left_aligned())
@@ -372,21 +389,28 @@ impl App {
         .height(1)
         .bottom_margin(1); 
 
-        // 3. Define the Rows from Items
+
+        // 3. Define the Rows from tui_vars
         let rows: Vec<Row> = self
-            .cache_list
-            .items
+            .var_list
+            .vars
             .iter()
-            // .filter(|item| self.show_advanced || !item.advanced)
+            .filter(|var| self.show_advanced || !var.var.advanced)
             .enumerate()
-            .map(|(i, item)| {
+            .map(|(i, var)| {
                 let color = alternate_colors(i);
+
+                let name_label = if self.check_if_var_is_modified(var) {
+                    format!("*{}", var.var.name)
+                } else {
+                    format!(" {}", var.var.name)
+                };
                 
-                // Assuming item.name, item.entry_type, item.value implement Display
+                // Assuming var.var.name, var.var.typ, var.var.value implement Display
                 Row::new(vec![
-                    Cell::from(item.name.clone()),
-                    Cell::from(item.entry_type.to_string()), 
-                    Cell::from(item.value.to_string()),
+                    Cell::from(name_label),
+                    Cell::from(var.var.typ.to_string()), 
+                    Cell::from(var.new_val.to_string()),
                 ])
                 .style(Style::new().bg(color).fg(TEXT_FG_COLOR))
             })
@@ -395,7 +419,7 @@ impl App {
         // 4. Define Column Widths
         // We use the calculated longest_name for the first column
         let widths = [
-            Constraint::Length(self.cache_list.longest_name as u16 + 4), // +4 for padding
+            Constraint::Length(self.var_list.longest_name as u16 + 4), // +4 for padding
             Constraint::Length(20), // Fixed width for Type
             Constraint::Min(10),    // Remaining space for Value
         ];
@@ -409,7 +433,7 @@ impl App {
             .highlight_spacing(HighlightSpacing::Always);
 
         // 6. Render with State
-        StatefulWidget::render(table, area, buf, &mut self.cache_list.state);
+        StatefulWidget::render(table, area, buf, &mut self.var_list.state);
     }
 
     fn render_search_footer(&self, area: Rect, buf: &mut Buffer) {
@@ -430,16 +454,16 @@ impl App {
             .render(area, buf);
     }
 
-    fn render_selected_item(&self, area: Rect, buf: &mut Buffer) {
+    fn render_selected_var(&self, area: Rect, buf: &mut Buffer) {
 
-        let (name, desc) = if let Some(item) = self.get_selected_item() {
+        let (name, desc) = if let Some(var) = self.get_selected_var() {
             let mut values: String = "".to_string();
-            if item.entry_type == EntryType::Enum {
-                values = format!("\n\nPossible values: \n{}", item.values.join(", "));
+            if var.var.typ == VarType::Enum {
+                values = format!("\n\nPossible values: \n{}", var.var.values.join(", "));
             }
-            (item.name.clone(), format!("{}{}", item.desc, values))
+            (var.var.name.clone(), format!("{}{}", var.var.desc, values))
         } else {
-            ("No item".to_string(), "Nothing selected...".to_string())
+            ("No var".to_string(), "Nothing selected...".to_string())
         };
 
         let block = Block::new()

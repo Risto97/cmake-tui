@@ -2,9 +2,18 @@
 name = "cmake-tui"
 version = "0.0.1"
 edition = "2024"
+description = "CMake TUI for managing configuration options and cache variables"
+authors = ["Your Name <risto.pejasinovic@gmail.com>"]
+license = "LGPL-3.0"
+readme = "README.md"
+repository = "https://github.com/risto97/cmake-tui"
+homepage = "https://github.com/risto97/cmake-tui"
+keywords = ["cmake", "tui", "build-system", "terminal", "cli"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 regex = "1.12.2"
 color-eyre = "0.6.3"
 crossterm = "0.28.1"
 ratatui = "0.29.0"
+clap = { version = "4.5.53", features = ["derive"] }

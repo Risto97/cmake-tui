@@ -1,4 +1,3 @@
-use regex::Regex;
 use std::collections::HashMap;
 use std::{
     fmt,
@@ -7,52 +6,52 @@ use std::{
 };
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum EntryType {
+pub enum VarType {
     Bool,
     Str,
     Enum,
     Filepath,
     Dirpath,
-    Int,
-    INTERNAL,
+    // Int,
+    // INTERNAL,
     Static,
 }
 
-impl EntryType{
-    fn from_str(s: &str) -> Option<EntryType> {
+impl VarType{
+    fn from_str(s: &str) -> Option<VarType> {
         match s {
-            "BOOL" => Some(EntryType::Bool),
-            "FILEPATH" => Some(EntryType::Filepath),
-            "STRING" => Some(EntryType::Str),
-            "STATIC" => Some(EntryType::Static),
-            // "INTERNAL" => Some(EntryType::INTERNAL),
-            "PATH" => Some(EntryType::Dirpath),
+            "BOOL" => Some(VarType::Bool),
+            "FILEPATH" => Some(VarType::Filepath),
+            "STRING" => Some(VarType::Str),
+            "STATIC" => Some(VarType::Static),
+            // "INTERNAL" => Some(VarType::INTERNAL),
+            "PATH" => Some(VarType::Dirpath),
             _ => None,
         }
     }
 }
 
-impl fmt::Display for EntryType {
+impl fmt::Display for VarType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self)
     }
 }
 
 #[derive(Clone)]
-pub struct CacheEntry {
+pub struct CacheVar {
     pub name: String,
-    pub entry_type: EntryType,
+    pub typ: VarType,
     pub desc: String,
     pub value: String,
     pub values: Vec<String>,
     pub advanced: bool
 }
 
-impl CacheEntry {
-    fn new(name: String, entry_type: EntryType, desc: String, value: String) -> Self {
+impl CacheVar {
+    fn new(name: String, typ: VarType, desc: String, value: String) -> Self {
         Self {
             name,
-            entry_type,
+            typ,
             desc,
             value,
             values: Vec::new(),
@@ -64,8 +63,27 @@ impl CacheEntry {
         self.values = values_str.split(';').map(|s| s.to_string()).collect();
     }
 
-    pub fn toggle_bool(&mut self) {
-        let new_value = match self.value.to_lowercase().as_str() {
+    pub fn cycle_enum(&self, val: &String) -> String {
+        if self.values.is_empty() {
+            return val.clone(); // nothing to cycle
+        }
+
+        // Find the current index of `self.value` in `self.values`
+        let current_index = self
+            .values
+            .iter()
+            .position(|v| v == val)
+            .unwrap_or(0); // default to 0 if not found
+
+        // Compute the next index, wrapping around
+        let next_index = (current_index + 1) % self.values.len();
+
+        // Update `self.value`
+        self.values[next_index].clone()
+    }
+
+    pub fn toggle_bool(val: &String) -> String {
+        let new_value = match val.to_lowercase().as_str() {
             "on" => Some("OFF".to_string()),
             "true" => Some("FALSE".to_string()),
             "yes" => Some("NO".to_string()),
@@ -80,37 +98,19 @@ impl CacheEntry {
             "" => Some("ON".to_string()),
             _ => None
         };
-
-        self.value = new_value.unwrap_or(self.value.to_string());
+        // self.value = new_value.unwrap_or(self.value.to_string());
+        new_value.unwrap_or(val.clone())
     }
 
-    pub fn cycle_enum(&mut self) {
-        if self.values.is_empty() {
-            return; // nothing to cycle
-        }
-
-        // Find the current index of `self.value` in `self.values`
-        let current_index = self
-            .values
-            .iter()
-            .position(|v| v == &self.value)
-            .unwrap_or(0); // default to 0 if not found
-
-        // Compute the next index, wrapping around
-        let next_index = (current_index + 1) % self.values.len();
-
-        // Update `self.value`
-        self.value = self.values[next_index].clone();
-    }
 }
 
 
-impl fmt::Display for CacheEntry {
+impl fmt::Display for CacheVar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "CacheEntry {{ name: {}, type: {}, desc: {}, value: {}, values: {:?} }}",
-            self.name, self.entry_type, self.desc, self.value, self.values
+            "CacheVar {{ name: {}, type: {}, desc: {}, value: {}, values: {:?} }}",
+            self.name, self.typ, self.desc, self.value, self.values
         )
     }
 }
@@ -130,7 +130,7 @@ impl CacheParser{
         })
     }
 
-    fn parse_external_section(&self, external: &str) -> HashMap<String, CacheEntry> {
+    fn parse_external_section(&self, external: &str) -> HashMap<String, CacheVar> {
         let mut var_map = HashMap::new();
         let mut current_desc = String::new();
 
@@ -142,21 +142,21 @@ impl CacheParser{
 
             if let Some(caps) = self.var_regex.captures(line){
                 let name = &caps[1];
-                let entry_type = match EntryType::from_str(&caps[2]) {
+                let typ = match VarType::from_str(&caps[2]) {
                     Some(t) => t,
-                    None => EntryType::Str,
+                    None => VarType::Str,
                 };
                 let value = &caps[3];
 
-                let entry = CacheEntry::new(
+                let var = CacheVar::new(
                     name.to_string(),
-                    entry_type,
+                    typ,
                     current_desc.to_string(),
                     value.to_string()
                 );
 
-                if entry.entry_type != EntryType::Static{
-                    var_map.insert(name.to_string(), entry);
+                if var.typ != VarType::Static{
+                    var_map.insert(name.to_string(), var);
                 }
                 current_desc.clear();
             }
@@ -164,28 +164,28 @@ impl CacheParser{
         var_map
     }
 
-    fn parse_internal_section(&self, internal: &str, var_map: &mut HashMap<String, CacheEntry>){
+    fn parse_internal_section(&self, internal: &str, var_map: &mut HashMap<String, CacheVar>){
         for line in internal.lines(){
             if let Some(caps) = self.enum_regex.captures(line) {
                 let name = &caps[1];
                 let values = &caps[2];
 
-                if let Some(entry) = var_map.get_mut(name){
-                    entry.entry_type = EntryType::Enum;
-                    entry.set_enum_values(&values);
+                if let Some(var) = var_map.get_mut(name){
+                    var.typ = VarType::Enum;
+                    var.set_enum_values(&values);
                }
             }
 
             if let Some(caps) = self.advanced_regex.captures(line) {
                 let name = &caps[1];
-                if let Some(entry) = var_map.get_mut(name){
-                    entry.advanced = true;
+                if let Some(var) = var_map.get_mut(name){
+                    var.advanced = true;
                }
             }
         }
     }
 
-    fn parse_cache(&self, content: &str) -> HashMap<String, CacheEntry> {
+    fn parse_cache(&self, content: &str) -> HashMap<String, CacheVar> {
         let var_map = match content.split_once("# INTERNAL cache entries") {
             Some((external, internal)) => {
                 let mut var_map = self.parse_external_section(external);
@@ -198,8 +198,8 @@ impl CacheParser{
     }
 }
 
-pub fn parse_cmake_cache(build_dir: &str) -> io::Result<Vec<CacheEntry>> {
-    let mut cmake_cache_path = PathBuf::from(build_dir);
+pub fn parse_cmake_cache(build_dir: PathBuf) -> io::Result<Vec<CacheVar>> {
+    let mut cmake_cache_path = build_dir.clone();
     cmake_cache_path.push("CMakeCache.txt");
 
     // println!("Reading CMake cache from: {:?}", cmake_cache_path);
@@ -209,12 +209,12 @@ pub fn parse_cmake_cache(build_dir: &str) -> io::Result<Vec<CacheEntry>> {
     let parser = CacheParser::new()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
-    // Parse into HashMap<String, CacheEntry>
-    let mut entries: Vec<CacheEntry> = parser.parse_cache(&cache_content)
+    // Parse into HashMap<String, CacheVar>
+    let mut entries: Vec<CacheVar> = parser.parse_cache(&cache_content)
         .into_iter()
-        .map(|(name, mut entry)| {
-            entry.name = name; // ensure the struct contains the key
-            entry
+        .map(|(name, mut var)| {
+            var.name = name; // ensure the struct contains the key
+            var
         })
         .collect();
 
