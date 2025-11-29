@@ -6,29 +6,22 @@ use std::io;
 mod app;
 use app::App;
 
-// fn main() -> Result<(), Box<dyn std::error::Error>> {
-// fn main() -> io::Result<()> {
-//     // let var_map = parse_cmake_cache("/tools/work/x-heep/build/")?;
-//     //
-//     // for entry in var_map.values() {
-//     //     println!("{}", entry);
-//     // }
-//     //
-//     // println!("Parsed {} cache entries", var_map.len());
-//
-//     // TUI
-//     let mut terminal = ratatui::init();
-//     let app_result = App::default().run(&mut terminal);
-//     ratatui::restore();
-//
-//     app_result
-// }
+mod trace_logger;
+// use tracing::initialize_logging;
+// use tracing::{trace_dbg};
 
 
 use color_eyre::Result;
 
 fn main() -> Result<()> {
     color_eyre::install()?;
+    // trace_logger::initialize_logging()?;  
+
+    // now logging works!
+    // tracing::info!("App starting…");
+    // tracing::debug!("Debug message here");
+    // tracing::warn!("Something odd happened…");
+
     let terminal = ratatui::init();
     let app_result = App::default().run(terminal);
     ratatui::restore();

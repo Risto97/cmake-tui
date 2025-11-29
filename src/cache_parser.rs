@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
 };
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum EntryType {
     Bool,
     Str,
@@ -15,6 +15,7 @@ pub enum EntryType {
     Dirpath,
     Int,
     INTERNAL,
+    Static,
 }
 
 impl EntryType{
@@ -23,7 +24,8 @@ impl EntryType{
             "BOOL" => Some(EntryType::Bool),
             "FILEPATH" => Some(EntryType::Filepath),
             "STRING" => Some(EntryType::Str),
-            "STATIC" => Some(EntryType::INTERNAL),
+            "STATIC" => Some(EntryType::Static),
+            // "INTERNAL" => Some(EntryType::INTERNAL),
             "PATH" => Some(EntryType::Dirpath),
             _ => None,
         }
@@ -36,13 +38,14 @@ impl fmt::Display for EntryType {
     }
 }
 
+#[derive(Clone)]
 pub struct CacheEntry {
     pub name: String,
     pub entry_type: EntryType,
     pub desc: String,
     pub value: String,
     pub values: Vec<String>,
-    // advanced: bool
+    pub advanced: bool
 }
 
 impl CacheEntry {
@@ -53,11 +56,51 @@ impl CacheEntry {
             desc,
             value,
             values: Vec::new(),
+            advanced: false,
         }
     }
 
     fn set_enum_values(&mut self, values_str: &str) {
         self.values = values_str.split(';').map(|s| s.to_string()).collect();
+    }
+
+    pub fn toggle_bool(&mut self) {
+        let new_value = match self.value.to_lowercase().as_str() {
+            "on" => Some("OFF".to_string()),
+            "true" => Some("FALSE".to_string()),
+            "yes" => Some("NO".to_string()),
+            "y" => Some("N".to_string()),
+            "1" => Some("0".to_string()),
+            "off" => Some("ON".to_string()),
+            "false" => Some("TRUE".to_string()),
+            "no" => Some("YES".to_string()),
+            "n" => Some("Y".to_string()),
+            "ignore" => Some("ON".to_string()),
+            "notfound" => Some("ON".to_string()),
+            "" => Some("ON".to_string()),
+            _ => None
+        };
+
+        self.value = new_value.unwrap_or(self.value.to_string());
+    }
+
+    pub fn cycle_enum(&mut self) {
+        if self.values.is_empty() {
+            return; // nothing to cycle
+        }
+
+        // Find the current index of `self.value` in `self.values`
+        let current_index = self
+            .values
+            .iter()
+            .position(|v| v == &self.value)
+            .unwrap_or(0); // default to 0 if not found
+
+        // Compute the next index, wrapping around
+        let next_index = (current_index + 1) % self.values.len();
+
+        // Update `self.value`
+        self.value = self.values[next_index].clone();
     }
 }
 
@@ -72,20 +115,10 @@ impl fmt::Display for CacheEntry {
     }
 }
 
-fn parse_entry_type(s: &str) -> Option<EntryType> {
-    match s {
-        "BOOL" => Some(EntryType::Bool),
-        "FILEPATH" => Some(EntryType::Filepath),
-        "STRING" => Some(EntryType::Str),
-        "STATIC" => Some(EntryType::INTERNAL),
-        "PATH" => Some(EntryType::Dirpath),
-        _ => None,
-    }
-}
-
 pub struct CacheParser {
     var_regex: regex::Regex,
-    enum_regex: regex::Regex
+    enum_regex: regex::Regex,
+    advanced_regex: regex::Regex,
 }
 
 impl CacheParser{
@@ -93,6 +126,7 @@ impl CacheParser{
         Ok(Self {
             var_regex: regex::Regex::new(r"^([A-Za-z_][A-Za-z0-9_]*)\:([A-Z]+)\=(.*)$")?,
             enum_regex: regex::Regex::new(r"^([^-]+)-STRINGS:INTERNAL=(.+)$")?,
+            advanced_regex: regex::Regex::new(r"^([^-]+)-ADVANCED:INTERNAL=1$")?,
         })
     }
 
@@ -108,7 +142,7 @@ impl CacheParser{
 
             if let Some(caps) = self.var_regex.captures(line){
                 let name = &caps[1];
-                let entry_type = match parse_entry_type(&caps[2]) {
+                let entry_type = match EntryType::from_str(&caps[2]) {
                     Some(t) => t,
                     None => EntryType::Str,
                 };
@@ -121,7 +155,9 @@ impl CacheParser{
                     value.to_string()
                 );
 
-                var_map.insert(name.to_string(), entry);
+                if entry.entry_type != EntryType::Static{
+                    var_map.insert(name.to_string(), entry);
+                }
                 current_desc.clear();
             }
         }
@@ -139,11 +175,18 @@ impl CacheParser{
                     entry.set_enum_values(&values);
                }
             }
+
+            if let Some(caps) = self.advanced_regex.captures(line) {
+                let name = &caps[1];
+                if let Some(entry) = var_map.get_mut(name){
+                    entry.advanced = true;
+               }
+            }
         }
     }
 
     fn parse_cache(&self, content: &str) -> HashMap<String, CacheEntry> {
-        let mut var_map = match content.split_once("# Internal cache entries") {
+        let var_map = match content.split_once("# INTERNAL cache entries") {
             Some((external, internal)) => {
                 let mut var_map = self.parse_external_section(external);
                 self.parse_internal_section(internal, &mut var_map);
